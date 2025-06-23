@@ -1,9 +1,10 @@
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy import create_engine, inspect, MetaData, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine.url import URL
 import os
 import json
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # Database connection setup
@@ -12,75 +13,55 @@ engine = create_engine(URL.create(
     username=os.getenv("MYSQL_USER"),
     password=os.getenv("MYSQL_PASS"),
     host=os.getenv("MYSQL_HOST"),
-    port=os.getenv("MYSQL_PORT"),
+    port=int(os.getenv("MYSQL_PORT", 3306)),
     database=os.getenv("MYSQL_DB"),
     query={"charset": "utf8mb4"}
 ))
 
 mcp = FastMCP("SQLDatabase")
 
-# Tool: List of tables
 @mcp.tool()
-async def get_table_names() -> str:
-    """Returns all table names in the database as a JSON list"""
-    inspector = inspect(engine)
-    return json.dumps(inspector.get_table_names())
-
-# Tool: Table schema with relationships
-@mcp.tool()
-async def get_table_schema(table_name: str) -> str:
-    """Returns detailed schema including relationships as JSON"""
-    inspector = inspect(engine)
-    metadata = MetaData()
-    metadata.reflect(bind=engine, only=[table_name])
-    table = metadata.tables[table_name]
-
-    schema = {
-        "table": table_name,
-        "columns": [],
-        "primary_key": [c.name for c in table.primary_key.columns],
-        "foreign_keys": []
-    }
-
-    for column in table.columns:
-        schema["columns"].append({
-            "name": column.name,
-            "type": str(column.type),
-            "nullable": column.nullable,
-            "default": str(column.default) if column.default else None
-        })
-
-    for fk in table.foreign_key_constraints:
-        schema["foreign_keys"].append({
-            "columns": [c.name for c in fk.columns],
-            "references": fk.referred_table,
-            "remote_columns": [c.parent.name for c in fk.elements]
-        })
-
-    return json.dumps(schema, indent=2)
-
-# Tool: Sample data from table
-@mcp.tool()
-async def get_table_sample(table_name: str) -> str:
-    """Returns sample record from table as JSON"""
-    inspector = inspect(engine)
-    if table_name not in inspector.get_table_names():
-        return json.dumps({"error": f"Table '{table_name}' does not exist"})
+async def list_tables() -> str:
+    """Return a JSON array of all table names in the database."""
     try:
-        with engine.connect() as conn:
-            result = conn.execute(text(f"SELECT * FROM `{table_name}` LIMIT 1"))
-            row = result.mappings().first()
-            return json.dumps(dict(row)) if row else "{}"
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        return json.dumps(tables)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-# Tool: SQL execution
 @mcp.tool()
-async def execute_sql(query: str) -> str:
-    """Executes SQL query and returns results as JSON"""
-    with engine.connect() as conn:
-        result = conn.execute(text(query))
-        return json.dumps([dict(row) for row in result.mappings()])
+async def table_schema(table_name: str) -> str:
+    """
+    Return the schema for the given table as a JSON list of columns and types,
+    plus one sample row (if exists).
+    """
+    try:
+        inspector = inspect(engine)
+        if table_name not in inspector.get_table_names():
+            return json.dumps({"error": f"Table '{table_name}' does not exist"})
+
+        columns = inspector.get_columns(table_name)
+        schema = [[col["name"], str(col["type"])] for col in columns]
+
+        # Get one sample row
+        sample_row = None
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(f"SELECT * FROM `{table_name}` LIMIT 1"))
+                row = result.mappings().first()
+                if row:
+                    sample_row = dict(row)
+        except Exception as e:
+            sample_row = {"error": f"Could not fetch sample row: {str(e)}"}
+
+        return json.dumps({
+            "table": table_name,
+            "schema": schema,
+            "sample_row": sample_row
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
