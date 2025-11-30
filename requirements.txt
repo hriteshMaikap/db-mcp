@@ -1,0 +1,10 @@
+mcp[cli]
+fastmcp
+sqlalchemy
+pymysql
+google-genai
+python-dotenv
+pydantic
+uvicorn
+starlette
+matplotlib
